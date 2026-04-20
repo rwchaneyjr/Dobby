@@ -1,4 +1,6 @@
 using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
 
 public class MoveAndAnimate : MonoBehaviour
 {
@@ -11,14 +13,14 @@ public class MoveAndAnimate : MonoBehaviour
 
     [Header("Spell")]
     public Transform firePoint;
-    public LineRenderer lightningLine;
-    public float spellRange = 20f;
+    public ParticleSystem beamParticles;
+    public float range = 20f;
+    public float spellDuration = 1.5f;
+    public float hitDelay = 1.0f;
+    public Color hitColor = Color.red;
 
-    // This tracks whether the lightning already fired once
-    private bool hasFired = false;
-
-    // Put your exact spell state name here
-    private string spellStateName = "Standing 2H Magic Attack 04";
+    private bool isCasting = false;
+    private HashSet<GameObject> processedObjects = new HashSet<GameObject>();
 
     void Start()
     {
@@ -27,10 +29,9 @@ public class MoveAndAnimate : MonoBehaviour
             animatorK = GetComponent<Animator>();
         }
 
-        if (lightningLine != null)
+        if (beamParticles != null)
         {
-            lightningLine.enabled = false;
-            lightningLine.positionCount = 2;
+            beamParticles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
         }
     }
 
@@ -38,9 +39,6 @@ public class MoveAndAnimate : MonoBehaviour
     {
         if (animatorK == null) return;
 
-        // -----------------------------
-        // INPUT
-        // -----------------------------
         float moveX = 0f;
         float moveZ = 0f;
 
@@ -49,15 +47,10 @@ public class MoveAndAnimate : MonoBehaviour
         if (Input.GetKey(KeyCode.A)) moveX -= 1f;
         if (Input.GetKey(KeyCode.D)) moveX += 1f;
 
-        // -----------------------------
-        // MOVEMENT DIRECTION
-        // -----------------------------
         Vector3 moveDir = new Vector3(moveX, 0f, moveZ).normalized;
 
-        // -----------------------------
-        // ROTATE TOWARD MOVEMENT
-        // -----------------------------
-        if (moveDir.magnitude > 0.01f)
+        // Turn player toward movement
+        if (moveDir.magnitude > 0.01f && !isCasting)
         {
             Quaternion targetRotation = Quaternion.LookRotation(moveDir);
             transform.rotation = Quaternion.Slerp(
@@ -67,21 +60,18 @@ public class MoveAndAnimate : MonoBehaviour
             );
         }
 
-        // -----------------------------
-        // MOVE CHARACTER
-        // -----------------------------
-        transform.Translate(moveDir * moveSpeed * Time.deltaTime, Space.World);
+        // Move player
+        if (!isCasting)
+        {
+            transform.Translate(moveDir * moveSpeed * Time.deltaTime, Space.World);
+        }
 
-        // -----------------------------
-        // WALK ANIMATION
-        // -----------------------------
-        bool isMoving = moveDir.magnitude > 0f;
+        // Walk animation
+        bool isMoving = moveDir.magnitude > 0f && !isCasting;
         animatorK.SetBool("Walk", isMoving);
         animatorK.SetBool("Back", false);
 
-        // -----------------------------
-        // DANCE
-        // -----------------------------
+        // Dance
         if (Input.GetKeyDown(KeyCode.F))
         {
             animatorK.SetBool("Dance", true);
@@ -92,85 +82,146 @@ public class MoveAndAnimate : MonoBehaviour
             animatorK.SetBool("Dance", false);
         }
 
-        // -----------------------------
-        // START SPELL
-        // -----------------------------
-        if (Input.GetKeyDown(KeyCode.G))
+        // Cast with G
+        if (Input.GetKeyDown(KeyCode.G) && !isCasting)
         {
-            animatorK.speed = 1f;          // make sure animation can play
-            animatorK.SetBool("Spell", true);
-            hasFired = false;              // allow lightning to fire this cast
-        }
-
-        // -----------------------------
-        // STOP SPELL
-        // -----------------------------
-        if (Input.GetKeyUp(KeyCode.G))
-        {
-            animatorK.SetBool("Spell", false);
-            animatorK.speed = 1f;          // unfreeze animation
-            hasFired = false;              // reset for next cast
-
-            if (lightningLine != null)
-            {
-                lightningLine.enabled = false;
-            }
-        }
-
-        // -----------------------------
-        // CHECK SPELL STATE
-        // Freeze at end and fire lightning once
-        // -----------------------------
-        AnimatorStateInfo state = animatorK.GetCurrentAnimatorStateInfo(0);
-
-        if (state.IsName(spellStateName))
-        {
-            // normalizedTime goes from 0 to 1 for one playthrough
-            if (state.normalizedTime >= 0.95f)
-            {
-                // Fire lightning once
-                if (!hasFired)
-                {
-                    ShootLightning();
-                    hasFired = true;
-                }
-
-                // Freeze at the end pose
-                animatorK.speed = 0f;
-            }
+            StartCoroutine(CastSpell());
         }
     }
 
-    void ShootLightning()
+    IEnumerator CastSpell()
     {
-        if (firePoint == null || lightningLine == null) return;
+        isCasting = true;
+        processedObjects.Clear();
+
+        animatorK.SetBool("Spell", true);
+
+        // small delay so animation starts first
+        yield return new WaitForSeconds(0.15f);
+
+        if (beamParticles != null)
+        {
+            beamParticles.Play();
+        }
+
+        ShootBeam();
+
+        yield return new WaitForSeconds(spellDuration);
+
+        if (beamParticles != null)
+        {
+            beamParticles.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+        }
+
+        animatorK.SetBool("Spell", false);
+        isCasting = false;
+    }
+
+    void ShootBeam()
+    {
+        if (firePoint == null)
+        {
+            Debug.LogError("NO FIREPOINT ASSIGNED");
+            return;
+        }
 
         RaycastHit hit;
 
-        // Start slightly in front of the hand
-        Vector3 start = firePoint.position + firePoint.forward * 0.1f;
-        Vector3 direction = firePoint.forward;
-        Vector3 end;
+        // start at hand position
+        Vector3 origin = firePoint.position;
 
-        if (Physics.Raycast(start, direction, out hit, spellRange))
+        // use PLAYER forward, flattened, so the ray does not tilt up/down
+       // Vector3 direction = Camera.main.transform.forward;
+        Vector3 direction = new Vector3(transform.forward.x, 0f, transform.forward.z).normalized;
+
+        // push ray a little forward so it does not start inside the player
+        origin += direction * 0.2f;
+
+        Debug.Log("Ray Origin: " + origin);
+        Debug.Log("Ray Direction: " + direction);
+
+        Debug.DrawRay(origin, direction * range, Color.cyan, 2f);
+
+        // aim particle system the same way
+        if (beamParticles != null)
         {
-            end = hit.point;
+            beamParticles.transform.position = origin;
+            beamParticles.transform.rotation = Quaternion.LookRotation(direction);
+        }
 
-            Debug.Log("Hit: " + hit.collider.name);
-
-            // Destroy anything except Ground
-            if (!hit.collider.CompareTag("Ground"))
+        if (Physics.SphereCast(origin, 0.6f, direction, out hit, range))
             {
-                Destroy(hit.collider.gameObject);
+            GameObject target = hit.collider.gameObject;
+
+            Debug.Log("HIT: " + target.name);
+
+            if (target.CompareTag("Ground"))
+            {
+                Debug.Log("Hit ground - ignoring");
+                return;
+            }
+
+            if (processedObjects.Contains(target))
+            {
+                Debug.Log("Already processing: " + target.name);
+                return;
+            }
+
+            processedObjects.Add(target);
+
+            Renderer targetRenderer = target.GetComponent<Renderer>();
+            if (targetRenderer == null)
+            {
+                targetRenderer = target.GetComponentInChildren<Renderer>();
+            }
+
+            StartCoroutine(HandleHit(target, targetRenderer, target.name));
+        }
+        else
+        {
+            Debug.Log("Raycast missed");
+        }
+    }
+
+    IEnumerator HandleHit(GameObject target, Renderer targetRenderer, string targetName)
+    {
+        Debug.Log("HandleHit started for " + targetName);
+
+        yield return new WaitForSeconds(hitDelay);
+
+        if (target == null) yield break;
+
+        if (targetRenderer != null)
+        {
+            Debug.Log("Preparing material instance for " + targetName);
+            targetRenderer.material = new Material(targetRenderer.material);
+
+            if (targetRenderer.material.HasProperty("_BaseColor"))
+            {
+                targetRenderer.material.SetColor("_BaseColor", hitColor);
+                Debug.Log("Changed _BaseColor on " + targetName);
+            }
+            else if (targetRenderer.material.HasProperty("_Color"))
+            {
+                targetRenderer.material.color = hitColor;
+                Debug.Log("Changed _Color on " + targetName);
+            }
+            else
+            {
+                Debug.LogWarning("Material has NO _BaseColor or _Color on " + targetName);
             }
         }
         else
         {
-            end = start + direction * spellRange;
+            Debug.LogWarning("No Renderer found for " + targetName);
         }
 
-        lightningLine.enabled = true;
-        lightningLine.SetPosition(0, start);
-        lightningLine.SetPosition(1, end);
+        yield return new WaitForSeconds(0.5f);
+
+        if (target != null)
+        {
+            Debug.Log("Destroying " + targetName);
+            Destroy(target);
+        }
     }
 }

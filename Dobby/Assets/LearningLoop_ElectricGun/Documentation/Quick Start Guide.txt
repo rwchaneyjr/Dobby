@@ -1,0 +1,19 @@
+Quick Start Guide
+
+1. Open the DemoScene.
+2. Select the ElectricGun object.
+3. In the Inspector, confirm the following references are assigned:
+   - FirePoint
+   - Beam Particles
+   - Zap Sound
+4. Press Play.
+5. Hold the left mouse button to fire the beam.
+
+Creating Your Own Setup
+1. Create an empty GameObject named ElectricGun.
+2. Add the ElementGun script.
+3. Create a child object named FirePoint.
+4. Move FirePoint to the front of the gun.
+5. Add or assign a ParticleSystem for the beam effect.
+6. Add an AudioSource for the zap sound.
+7. Drag the finished ElectricGun object into the Prefabs folder to create a prefab.
